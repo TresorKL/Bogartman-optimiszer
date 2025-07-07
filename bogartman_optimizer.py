@@ -10,6 +10,8 @@ import os
 from datetime import datetime
 from dotenv import load_dotenv
 import io
+import requests  # Added for DeepSeek API
+import re
 
 # Load environment variables
 load_dotenv()
@@ -110,9 +112,9 @@ PRODUCT_CATEGORIES = {
 }
 
 # Define all classes first
-class AIStrategicAdvisor:
+class SalesDataAnalyzer:
     def __init__(self):
-        self.api_key = os.getenv('OPENAI_API_KEY')
+        self.api_key = os.getenv('DEEPSEEK_API_KEY')
         self.context = """
         You are a senior retail strategy consultant specializing in luxury men's fashion and inventory optimization. 
         You're analyzing data for Bogart Man, a premium South African men's clothing brand that targets 
@@ -130,62 +132,92 @@ class AIStrategicAdvisor:
         Be specific, practical, and consider both opportunities and risks.
         Return response as JSON array with objects containing: category, insight, recommendation, priority (HIGH/MEDIUM/LOW)
         """
-    
-    def generate_recommendations(self, analysis_data):
-        """Generate AI-powered strategic recommendations using OpenAI"""
+
+    def build_prompt(self, analysis_data):
+        return f"""
+        {self.context}
         
+        BUSINESS ANALYSIS DATA:
+        {json.dumps(analysis_data, indent=2)}
+        
+        Based on this comprehensive analysis, provide strategic recommendations covering:
+        
+        1. INVESTMENT STRATEGY: Comment on the budget allocation and ROI potential
+        2. PRODUCT MIX OPTIMIZATION: Which categories to focus on or avoid
+        3. OPERATIONAL EFFICIENCY: Store distribution and inventory turnover insights
+        4. RISK ASSESSMENT: Potential challenges and mitigation strategies
+        5. GROWTH OPPORTUNITIES: Specific actions to maximize profitability
+        6. MARKET POSITIONING: How this strategy aligns with Bogart Man's luxury brand
+        
+        IMPORTANT: Return ONLY a valid JSON array (not wrapped in markdown or code blocks). Do not include any explanation or formatting, just the JSON array.
+        """
+
+    def generate_recommendations(self, analysis_data):
+        """Generate AI-powered strategic recommendations using DeepSeek"""
         if not self.api_key:
-            self.api_key = os.environ.get('OPENAI_API_KEY') or os.getenv('OPENAI_API_KEY')
-            
+            self.api_key = os.environ.get('DEEPSEEK_API_KEY') or os.getenv('DEEPSEEK_API_KEY')
         if not self.api_key:
+            st.error("🚨 DeepSeek API key not found. Please ensure DEEPSEEK_API_KEY is set in your environment variables.")
+            st.info("💡 Create a .env file with: DEEPSEEK_API_KEY=your_key_here")
             return None
-            
-        return self.call_openai(analysis_data)
-    
-    def call_openai(self, analysis_data):
-        """Call OpenAI GPT-4 API for recommendations"""
+        return self.call_deepseek(analysis_data)
+
+    def call_deepseek(self, analysis_data):
+        """Call DeepSeek API for recommendations"""
         try:
-            import openai
-            client = openai.OpenAI(api_key=self.api_key)
-            
-            prompt = f"""
-            {self.context}
-            
-            BUSINESS ANALYSIS DATA:
-            {json.dumps(analysis_data, indent=2)}
-            
-            Based on this comprehensive analysis, provide strategic recommendations covering:
-            
-            1. INVESTMENT STRATEGY: Comment on the budget allocation and ROI potential
-            2. PRODUCT MIX OPTIMIZATION: Which categories to focus on or avoid
-            3. OPERATIONAL EFFICIENCY: Store distribution and inventory turnover insights
-            4. RISK ASSESSMENT: Potential challenges and mitigation strategies
-            5. GROWTH OPPORTUNITIES: Specific actions to maximize profitability
-            6. MARKET POSITIONING: How this strategy aligns with Bogart Man's luxury brand
-            """
-            
-            response = client.chat.completions.create(
-                model="gpt-4",
-                messages=[
+            url = "https://api.deepseek.com/v1/chat/completions"
+            headers = {
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json"
+            }
+            payload = {
+                "model": "deepseek-chat",
+                "messages": [
                     {"role": "system", "content": "You are a senior retail strategy consultant. Return JSON array format with category, insight, recommendation, and priority fields."},
-                    {"role": "user", "content": prompt}
+                    {"role": "user", "content": self.build_prompt(analysis_data)}
                 ],
-                temperature=0.7
-            )
+                "temperature": 0.7
+            }
+            response = requests.post(url, headers=headers, json=payload)
+            response.raise_for_status()
+            result = response.json()
             
+            # Get the content from the API response
+            content = result['choices'][0]['message']['content']
+            
+            # Clean the content - remove markdown code blocks if present
+            content = content.strip()
+            if content.startswith('```json'):
+                content = content.replace('```json', '').replace('```', '').strip()
+            elif content.startswith('```'):
+                content = content.replace('```', '').strip()
+            
+            # Try to parse as JSON
             try:
-                return json.loads(response.choices[0].message.content)
-            except:
-                return self.parse_text_to_recommendations(response.choices[0].message.content)
-                
+                parsed_recommendations = json.loads(content)
+                # Ensure it's a list
+                if isinstance(parsed_recommendations, dict):
+                    parsed_recommendations = [parsed_recommendations]
+                return parsed_recommendations
+            except json.JSONDecodeError:
+                # If JSON parsing fails, try to extract JSON from the text
+                import re
+                json_match = re.search(r'\[.*\]', content, re.DOTALL)
+                if json_match:
+                    try:
+                        return json.loads(json_match.group())
+                    except:
+                        pass
+                # Last resort - convert text to recommendations
+                return self.parse_text_to_recommendations(content)
         except Exception as e:
+            st.error(f"🚨 AI Analysis Error: {str(e)}")
             return None
-    
+
     def parse_text_to_recommendations(self, text):
         """Parse text response into recommendation format"""
         recommendations = []
         sections = text.split('\n\n')
-        
         for i, section in enumerate(sections[:6]):
             if section.strip():
                 recommendations.append({
@@ -194,7 +226,6 @@ class AIStrategicAdvisor:
                     "recommendation": section.strip(),
                     "priority": ["HIGH", "MEDIUM", "LOW"][i % 3]
                 })
-        
         return recommendations if recommendations else None
 
 class InventoryOptimizer:
@@ -448,116 +479,22 @@ def display_results(results, budget, markup_percent, turnaround_days, num_stores
     else:
         st.info("📊 Profitability analysis not available")
     
-    # AI-Powered Strategic Recommendations
-    st.markdown('<h2 class="section-header">🤖 AI Strategic Recommendations</h2>', unsafe_allow_html=True)
-    
-    # Check if OpenAI API key is available
-    api_key = os.getenv('OPENAI_API_KEY')
-    
-    if not api_key:
-        st.warning("🤖 **AI Analysis Not Available**")
-        st.info("""
-        **To enable AI-powered strategic recommendations:**
-        
-        1. **Set up your OpenAI API key** in your environment variables
-        2. **Create a .env file** with: `OPENAI_API_KEY=your_key_here`
-        3. **Restart the application** to load the new configuration
-        
-        **What AI Analysis Provides:**
-        - 💰 Investment Strategy Analysis
-        - 🎯 Product Mix Optimization  
-        - ⚡ Operational Efficiency Insights
-        - ⚠️ Risk Assessment
-        - 🚀 Growth Opportunities
-        - 👔 Market Positioning Advice
-        """)
-    else:
-        try:
-            # Only create AI advisor if we have the key
-            ai_advisor = AIStrategicAdvisor()
-            analysis_data = {
-                'budget': budget,
-                'markup_percent': markup_percent,
-                'turnaround_days': turnaround_days,
-                'num_stores': num_stores,
-                'total_products': total_products,
-                'avg_supplier_cost': avg_supplier_cost,
-                'projected_revenue': projected_revenue,
-                'total_profit': total_profit,
-                'turnover_cycles': turnover_cycles,
-                'category_breakdown': category_breakdown,
-                'roi_percentage': (total_profit / budget) * 100 if budget > 0 else 0
-            }
-            
-            # Generate AI recommendations
-            with st.spinner('🧠 AI Advisor analyzing your strategy...'):
-                ai_recommendations = ai_advisor.generate_recommendations(analysis_data)
-            
-            # Display AI recommendations
-            if ai_recommendations:
-                st.success("✅ AI Analysis Complete using GPT-4")
-                
-                for i, rec in enumerate(ai_recommendations):
-                    priority_color = {
-                        'HIGH': '#DC2626',
-                        'MEDIUM': '#D97706', 
-                        'LOW': '#059669'
-                    }.get(rec.get('priority', 'MEDIUM'), '#6B7280')
-                    
-                    with st.container():
-                        st.markdown(f"""
-                        <div style="
-                            border-left: 4px solid {priority_color};
-                            background: linear-gradient(135deg, #F8FAFC 0%, #F1F5F9 100%);
-                            padding: 1.5rem;
-                            margin: 1rem 0;
-                            border-radius: 8px;
-                            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
-                        ">
-                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;">
-                                <h3 style="color: #1E293B; margin: 0; font-size: 1.2rem;">{rec.get('category', 'Strategic Insight')}</h3>
-                                <span style="
-                                    background: {priority_color};
-                                    color: white;
-                                    padding: 0.25rem 0.75rem;
-                                    border-radius: 12px;
-                                    font-size: 0.75rem;
-                                    font-weight: bold;
-                                ">{rec.get('priority', 'MEDIUM')} PRIORITY</span>
-                            </div>
-                            <p style="color: #475569; font-weight: 600; margin: 0.5rem 0; font-size: 0.95rem;">
-                                💡 <strong>{rec.get('insight', 'Analysis Insight')}</strong>
-                            </p>
-                            <p style="color: #334155; margin: 0; line-height: 1.6; font-size: 0.95rem;">
-                                {rec.get('recommendation', 'Strategic recommendation')}
-                            </p>
-                        </div>
-                        """, unsafe_allow_html=True)
-                
-                # Add AI Analysis Summary
-                st.markdown("### 📊 AI Analysis Summary")
-                
-                col1, col2, col3 = st.columns(3)
-                
-                with col1:
-                    high_priority = len([r for r in ai_recommendations if r.get('priority') == 'HIGH'])
-                    st.metric("🔥 High Priority Actions", high_priority)
-                
-                with col2:
-                    medium_priority = len([r for r in ai_recommendations if r.get('priority') == 'MEDIUM'])
-                    st.metric("⚡ Medium Priority Actions", medium_priority)
-                
-                with col3:
-                    confidence_score = min(95, max(60, (total_profit / budget * 100) / 5)) if budget > 0 else 60
-                    st.metric("🎯 Strategy Confidence", f"{confidence_score:.0f}%")
-                    
-            else:
-                st.warning("🤖 AI Analysis Unavailable")
-                st.info("Please check your OpenAI API key configuration")
-                
-        except Exception as e:
-            st.warning("🤖 AI Analysis Error")
-            st.info(f"AI functionality temporarily unavailable: {str(e)}")
+    # AI-Powered Strategic Recommendations - NEW IMPROVED VERSION
+    ai_advisor = SalesDataAnalyzer()
+    analysis_data = {
+        'budget': budget,
+        'markup_percent': markup_percent,
+        'turnaround_days': turnaround_days,
+        'num_stores': num_stores,
+        'total_products': results.get('total_products', 0),
+        'avg_supplier_cost': results.get('avg_supplier_cost', 0),
+        'projected_revenue': results.get('projected_revenue', 0),
+        'total_profit': results.get('total_profit', 0),
+        'turnover_cycles': results.get('turnover_cycles', 0),
+        'category_breakdown': results.get('category_breakdown', {}),
+        'roi_percentage': (results.get('total_profit', 0) / budget) * 100 if budget > 0 else 0
+    }
+    display_ai_section_improved(ai_advisor, analysis_data)
     
     # Export functionality
     st.markdown('<h2 class="section-header">📤 Export Results</h2>', unsafe_allow_html=True)
@@ -592,6 +529,142 @@ def display_results(results, budget, markup_percent, turnaround_days, num_stores
     with col2:
         if st.button("🔄 Analyze Again", use_container_width=True):
             st.rerun()
+
+def display_ai_recommendations(ai_recommendations):
+    """Display AI recommendations in a clean, user-friendly format"""
+    import json
+    if not ai_recommendations:
+        st.warning("🤖 AI Analysis Unavailable")
+        st.info("Please check your DeepSeek API key configuration")
+        return
+
+    st.success("✅ AI Strategic Analysis Complete")
+
+    # Handle string responses that contain JSON
+    if isinstance(ai_recommendations, str):
+        try:
+            # Check if it's a JSON string
+            if ai_recommendations.strip().startswith('[') or ai_recommendations.strip().startswith('{'):
+                ai_recommendations = json.loads(ai_recommendations)
+            else:
+                # Create a single recommendation from the text
+                ai_recommendations = [{
+                    "category": "📊 Strategic Analysis",
+                    "insight": "AI-Generated Insights", 
+                    "recommendation": ai_recommendations,
+                    "priority": "HIGH"
+                }]
+        except:
+            ai_recommendations = [{
+                "category": "📊 Strategic Analysis",
+                "insight": "Analysis Complete",
+                "recommendation": str(ai_recommendations),
+                "priority": "MEDIUM"
+            }]
+
+    # Ensure we have a list
+    if isinstance(ai_recommendations, dict):
+        ai_recommendations = [ai_recommendations]
+
+    # Summary metrics at the top
+    col1, col2, col3, col4 = st.columns(4)
+    high_priority = len([r for r in ai_recommendations if r.get('priority') == 'HIGH'])
+    medium_priority = len([r for r in ai_recommendations if r.get('priority') == 'MEDIUM'])
+    low_priority = len([r for r in ai_recommendations if r.get('priority') == 'LOW'])
+    total_insights = len(ai_recommendations)
+
+    with col1:
+        st.metric("🔥 High Priority", high_priority, help="Critical actions to implement immediately")
+    with col2:
+        st.metric("⚡ Medium Priority", medium_priority, help="Important improvements to consider")
+    with col3:
+        st.metric("💡 Low Priority", low_priority, help="Future optimization opportunities")
+    with col4:
+        st.metric("📊 Total Insights", total_insights, help="Complete strategic recommendations")
+
+    st.markdown("---")
+
+    # Group recommendations by priority
+    priority_order = ['HIGH', 'MEDIUM', 'LOW']
+    priority_icons = {'HIGH': '🔥', 'MEDIUM': '⚡', 'LOW': '💡'}
+    priority_colors = {
+        'HIGH': '#DC2626',
+        'MEDIUM': '#D97706', 
+        'LOW': '#059669'
+    }
+
+    for priority in priority_order:
+        priority_recs = [r for r in ai_recommendations if r.get('priority') == priority]
+        if not priority_recs:
+            continue
+        st.markdown(f"### {priority_icons.get(priority, '📊')} {priority} PRIORITY ACTIONS")
+        for i, rec in enumerate(priority_recs):
+            category = rec.get('category', 'Strategic Insight')
+            insight = rec.get('insight', 'Analysis Insight')
+            recommendation = rec.get('recommendation', 'Strategic recommendation')
+            # Clean up category names for better display
+            category_mapping = {
+                'INVESTMENT STRATEGY': '💰 Investment Strategy',
+                'PRODUCT MIX OPTIMIZATION': '🎯 Product Mix',
+                'OPERATIONAL EFFICIENCY': '⚡ Operations',
+                'RISK ASSESSMENT': '⚠️ Risk Management',
+                'GROWTH OPPORTUNITIES': '🚀 Growth',
+                'MARKET POSITIONING': '👔 Market Position'
+            }
+            for old_name, new_name in category_mapping.items():
+                category = category.replace(old_name, new_name)
+            with st.container():
+                st.markdown(f"""
+                <div style="
+                    border-left: 4px solid {priority_colors.get(priority, '#6B7280')};
+                    background: linear-gradient(135deg, #F8FAFC 0%, #F1F5F9 100%);
+                    padding: 1.5rem;
+                    margin: 1rem 0;
+                    border-radius: 8px;
+                    box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+                ">
+                    <h4 style="color: #1E293B; margin: 0 0 0.5rem 0; font-size: 1.1rem;">
+                        {category}
+                    </h4>
+                    <p style="color: #64748B; font-weight: 600; margin: 0.5rem 0; font-size: 0.9rem; font-style: italic;">
+                        💡 {insight}
+                    </p>
+                    <p style="color: #334155; margin: 0; line-height: 1.6; font-size: 0.95rem;">
+                        {recommendation}
+                    </p>
+                </div>
+                """, unsafe_allow_html=True)
+        st.markdown("---")
+    if high_priority > 0:
+        st.info(f"🎯 **Next Steps**: Focus on the {high_priority} high-priority action{'s' if high_priority > 1 else ''} above for immediate impact on your business.")
+
+def display_ai_section_improved(ai_advisor, analysis_data):
+    """Improved AI recommendations section"""
+    st.markdown('<h2 class="section-header">🤖 AI Strategic Recommendations</h2>', unsafe_allow_html=True)
+    api_key = os.getenv('DEEPSEEK_API_KEY')
+    if not api_key:
+        st.warning("🤖 **AI Analysis Not Available**")
+        st.info("""
+        **To enable AI-powered strategic recommendations:**
+        1. **Set up your DeepSeek API key** in your environment variables
+        2. **Create a .env file** with: `DEEPSEEK_API_KEY=your_key_here`
+        3. **Restart the application** to load the new configuration
+        **What AI Analysis Provides:**
+        - 💰 Investment Strategy Analysis
+        - 🎯 Product Mix Optimization  
+        - ⚡ Operational Efficiency Insights
+        - ⚠️ Risk Assessment
+        - 🚀 Growth Opportunities
+        - 👔 Market Positioning Advice
+        """)
+    else:
+        try:
+            with st.spinner('🧠 AI Advisor analyzing your strategy...'):
+                ai_recommendations = ai_advisor.generate_recommendations(analysis_data)
+            display_ai_recommendations(ai_recommendations)
+        except Exception as e:
+            st.warning("🤖 AI Analysis Error")
+            st.info(f"AI functionality temporarily unavailable: {str(e)}")
 
 def main():
     st.markdown('<h1 class="main-header">🏢 Bogart Man Inventory Optimizer</h1>', unsafe_allow_html=True)
